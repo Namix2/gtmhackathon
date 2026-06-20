@@ -1,0 +1,277 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Source {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  label     String
+  enabled   Boolean  @default(false)
+  config    Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  netSources       NetSource[]
+  rawCandidates    RawCandidate[]
+  contentItems     ContentItem[]
+  profileSnapshots ProfileSnapshot[]
+}
+
+model Net {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  params      Json
+  isActive    Boolean  @default(true)
+  icpTarget   String   @default("either") // "persuader" | "evaluator" | "either"
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  sources       NetSource[]
+  rawCandidates RawCandidate[]
+  netRuns       NetRun[]
+}
+
+model NetSource {
+  id       String @id @default(cuid())
+  netId    String
+  sourceId String
+  net      Net    @relation(fields: [netId], references: [id], onDelete: Cascade)
+  source   Source @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  @@unique([netId, sourceId])
+}
+
+model NetRun {
+  id              String    @id @default(cuid())
+  netId           String
+  status          String    @default("queued") // "queued" | "running" | "succeeded" | "failed" | "partial"
+  candidateCount  Int       @default(0)
+  contentCount    Int       @default(0)
+  metricCount     Int       @default(0)
+  profileCount    Int       @default(0)
+  errorCount      Int       @default(0)
+  error           String?
+  log             Json?      // per-source results, cursors, partial-failure details
+  startedAt       DateTime  @default(now())
+  finishedAt      DateTime?
+
+  net           Net            @relation(fields: [netId], references: [id], onDelete: Cascade)
+  rawCandidates RawCandidate[]
+  contentItems  ContentItem[]
+}
+
+model RawCandidate {
+  id             String   @id @default(cuid())
+  sourceId       String
+  netId          String?
+  netRunId       String?
+  externalId     String?
+  platformHandle String?
+  profileUrl     String?
+  matchContext   String?
+  rawPayload     Json?
+  dedupeStatus   String   @default("unresolved") // "unresolved" | "merged"
+  individualId   String?
+  discoveredAt   DateTime @default(now())
+
+  source       Source        @relation(fields: [sourceId], references: [id])
+  net          Net?          @relation(fields: [netId], references: [id])
+  netRun       NetRun?       @relation(fields: [netRunId], references: [id], onDelete: SetNull)
+  individual   Individual?   @relation(fields: [individualId], references: [id])
+  contentItems ContentItem[]
+
+  @@unique([sourceId, externalId])
+}
+
+model ContentItem {
+  id             String    @id @default(cuid())
+  sourceId       String
+  individualId   String?
+  rawCandidateId String?
+  netRunId       String?
+  externalId     String
+  type           String    @default("post") // "post" | "tweet" | "comment" | "article" | "thread"
+  url            String?
+  title          String?
+  body           String    @default("")
+  authorHandle   String?
+  lang           String?
+  rawPayload     Json?
+  publishedAt    DateTime?
+  fetchedAt      DateTime  @default(now())
+
+  source         Source                  @relation(fields: [sourceId], references: [id])
+  individual     Individual?             @relation(fields: [individualId], references: [id], onDelete: SetNull)
+  rawCandidate   RawCandidate?           @relation(fields: [rawCandidateId], references: [id], onDelete: SetNull)
+  netRun         NetRun?                 @relation(fields: [netRunId], references: [id], onDelete: SetNull)
+  metrics        ContentMetricSnapshot[]
+  signalEvidence SignalEvidence[]
+
+  @@unique([sourceId, externalId])
+}
+
+model ContentMetricSnapshot {
+  id            String   @id @default(cuid())
+  contentItemId String
+  capturedAt    DateTime @default(now())
+  likes         Int      @default(0)
+  comments      Int      @default(0)
+  shares        Int      @default(0)
+  views         Int      @default(0)
+  score         Int? // platform-native score, e.g. Reddit upvotes
+  extra         Json?
+
+  contentItem ContentItem @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
+}
+
+model ProfileSnapshot {
+  id             String   @id @default(cuid())
+  individualId   String?
+  sourceId       String?
+  handle         String?
+  capturedAt     DateTime @default(now())
+  followers      Int      @default(0)
+  following      Int      @default(0)
+  posts          Int      @default(0)
+  audienceQuality Json?
+
+  individual Individual? @relation(fields: [individualId], references: [id], onDelete: Cascade)
+  source     Source?     @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+}
+
+model SignalEvidence {
+  id            String   @id @default(cuid())
+  individualId  String
+  contentItemId String?
+  category      String // e.g. "ai_voice_anxiety", "network_leverage", "inbound_noise"
+  matchedPhrase String
+  weight        Float    @default(0)
+  confidence    Float    @default(1)
+  detectedBy    String   @default("keyword") // "keyword" | "llm" | "manual"
+  excerpt       String?
+  createdAt     DateTime @default(now())
+
+  individual  Individual   @relation(fields: [individualId], references: [id], onDelete: Cascade)
+  contentItem ContentItem? @relation(fields: [contentItemId], references: [id], onDelete: SetNull)
+}
+
+model ProspectScore {
+  id                     String   @id @default(cuid())
+  individualId           String
+  classification         String // "persuader" | "evaluator" | "hybrid"
+  dominantMotivation     String // "persuader" | "evaluator"
+  championFitScore       Float    @default(0)
+  useCaseScore           Float    @default(0)
+  baseScore              Float    @default(0)
+  frustrationCoefficient Float    @default(1)
+  adjustedScore          Float    @default(0)
+  tier                   String   @default("tier4") // "tier1" | "tier2" | "tier3" | "tier4"
+  outreachAngle          String?
+  components             Json? // full per-parameter breakdown for transparency
+  computedAt             DateTime @default(now())
+
+  individual Individual @relation(fields: [individualId], references: [id], onDelete: Cascade)
+}
+
+model Individual {
+  id                 String   @id @default(cuid())
+  displayName        String
+  primaryHandle      String?
+  primaryProfileUrl  String?
+  status             String   @default("pending_enrichment")
+  classification     String? // "persuader" | "evaluator" | "hybrid"
+  dominantMotivation String?
+  currentTier        String? // "tier1" | "tier2" | "tier3" | "tier4"
+  currentScore       Float?
+  outreachStatus     String   @default("not_started") // "not_started" | "queued" | "contacted" | "responded" | "won" | "archived"
+  isChampion         Boolean  @default(false)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt @default(now())
+
+  rawCandidates    RawCandidate[]
+  contentItems     ContentItem[]
+  profileSnapshots ProfileSnapshot[]
+  signalEvidence   SignalEvidence[]
+  scores           ProspectScore[]
+}
+
+// --- RSS Engine (canonical feed ingestion) -----------------------------------
+
+model RssQueryRun {
+  id                 String   @id @default(cuid())
+  kind               String // "date-window" | "source-category" | "pain-signal" | "discovery"
+  params             Json
+  registeredFeeds    Int      @default(0)
+  candidateFeeds     Int      @default(0)
+  rejectedCandidates Json? // [{ url, reason }]
+  createdAt          DateTime @default(now())
+
+  feedSources RssFeedSource[]
+}
+
+model RssFeedSource {
+  id                     String    @id @default(cuid())
+  sourceType             String // native_rss | rsshub | rssbridge | rss_app | manual
+  originalPlatform       String // substack | reddit | hackernews | blog | news | unknown
+  feedUrl                String    @unique
+  homepageUrl            String?
+  title                  String?
+  queryCategory          String?
+  dateCategory           String?
+  pollingIntervalMinutes Int       @default(60)
+  active                 Boolean   @default(true)
+  sourceQualityScore     Float?
+  sourceQualityRationale Json?
+  consecutiveEmptyPolls  Int       @default(0)
+  highScoreItemCount7d   Int       @default(0)
+  lastPolledAt           DateTime?
+  nextPollAt             DateTime?
+  queryRunId             String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  queryRun RssQueryRun? @relation(fields: [queryRunId], references: [id], onDelete: SetNull)
+  items    RssFeedItem[]
+}
+
+model RssFeedItem {
+  id           String    @id @default(cuid())
+  feedSourceId String
+  url          String
+  canonicalUrl String    @unique
+  title        String
+  summary      String?
+  contentText  String?
+  author       String?
+  publishedAt  DateTime?
+  discoveredAt DateTime  @default(now())
+  platform     String
+  tags         Json      @default("[]") // string[]
+  contentHash  String    @unique
+  externalId   String?
+
+  feedSource RssFeedSource  @relation(fields: [feedSourceId], references: [id], onDelete: Cascade)
+  signal     RssScoredSignal?
+}
+
+model RssScoredSignal {
+  itemId                 String   @id
+  icpCategory            String // persuader | evaluator | unknown
+  icpRole                String?
+  painSignalScore        Float
+  aiSlopFrustrationScore Float
+  authorityScore         Float
+  visibilityScore        Float
+  championScore          Float
+  priorityScore          Float
+  rationale              Json // string[]
+  scoredAt               DateTime @default(now())
+
+  item RssFeedItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+}
